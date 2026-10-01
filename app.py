@@ -5,6 +5,15 @@ import time
 import math as m
 import mediapipe as mp
 import argparse
+import matplotlib.pyplot as plt
+import winsound
+import threading
+import os
+
+sound_file = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "Fix_Your_Posture.wav"
+)
 
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
@@ -38,25 +47,91 @@ def findAngle(x1, y1, x2, y2):
     degree = int(180/m.pi) * theta
     return degree
 
-def sendWarning(x):
+def sendWarning(x=None):
     """
     Placeholder function for sending a warning.
     """
+    print("Posture Violation! Sit Straight Up!!")
+
+    winsound.PlaySound(
+        sound_file,
+        winsound.SND_FILENAME
+    )
+
+    '''for i in range(3):
+        winsound.Beep(1000, 300)
+        time.sleep(0.1)'''
+
     pass
+
+def list_available_cameras(max_cameras=10):
+    """
+    Probe camera indices 0..max_cameras-1 and return the ones that
+    actually open and deliver a frame.
+
+    Args:
+        max_cameras: Highest index (exclusive) to probe.
+
+    Returns:
+        List of valid camera indices, e.g. [0, 1].
+    """
+    available = []
+    for index in range(max_cameras):
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                available.append(index)
+        cap.release()
+    return available
+
+def select_camera():
+    """
+    Scan for available cameras and let the user pick one interactively.
+
+    Returns:
+        The chosen camera index (int).
+    """
+    print("Scanning for available cameras...")
+    cameras = list_available_cameras()
+
+    if not cameras:
+        print("No cameras found. Defaulting to camera 0.")
+        return 0
+
+    if len(cameras) == 1:
+        print(f"Only one camera found (index {cameras[0]}). Using it.")
+        return cameras[0]
+
+    print("Available cameras:")
+    for idx in cameras:
+        print(f"  [{idx}] Camera {idx}")
+
+    while True:
+        choice = input(f"Select a camera index {cameras}: ").strip()
+        try:
+            choice_int = int(choice)
+            if choice_int in cameras:
+                return choice_int
+            print("That index isn't in the list, try again.")
+        except ValueError:
+            print("Please enter a number.")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Posture Monitor with MediaPipe')
-    parser.add_argument('--video', type=str, default=0, help='Path to the input video file. If not provided, the webcam will be used.')
+    parser.add_argument('--video', type=str, default=None, help='Path to the input video file. If not provided, the webcam will be used.')
     parser.add_argument('--offset-threshold', type=int, default=100, help='Threshold value for shoulder alignment.')
     parser.add_argument('--neck-angle-threshold', type=int, default=25, help='Threshold value for neck inclination angle.')
     parser.add_argument('--torso-angle-threshold', type=int, default=10, help='Threshold value for torso inclination angle.')
-    parser.add_argument('--time-threshold', type=int, default=180, help='Time threshold for triggering a posture alert.')
+    parser.add_argument('--time-threshold', type=int, default=3, help='Time threshold for triggering a posture alert.')
     return parser.parse_args()
 
-def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, torso_angle_threshold=10, time_threshold=180):
+def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, torso_angle_threshold=10, time_threshold=3):
     # Initialize frame counters.
     good_frames = 0
     bad_frames = 0
+    good_frames_int = 0
+    bad_frames_int = 0
 
     # Font type.
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -75,11 +150,24 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose()
 
-    # For file input, replace file name with <path>.
-    cap = cv2.VideoCapture(video_path) if video_path else cv2.VideoCapture(0)
+    if isinstance(video_path, int):
+        cap = cv2.VideoCapture(video_path, cv2.CAP_DSHOW)
+        source_desc = f"camera index {video_path}"
+    else:
+        cap = cv2.VideoCapture(video_path)
+        source_desc = f"video file '{video_path}'"
+
+    if not cap.isOpened():
+        print(f"Could not open {source_desc}. Check the path/connection and try again.")
+        return
 
     # Meta.
     fps = int(cap.get(cv2.CAP_PROP_FPS))
+    time_data = []
+    neck_data = []
+    torso_data = []
+    start_time = time.time()
+    last_warning_time = 0
 
     while True:
         # Capture frames.
@@ -90,6 +178,9 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
 
         # Get fps.
         fps = cap.get(cv2.CAP_PROP_FPS)
+
+        if not fps or fps <= 0:
+            fps = 30  # fall back if the camera doesn't report a valid fps
 
         # Get height and width of the frame.
         h, w = image.shape[:2]
@@ -106,6 +197,13 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         # Use lm and lmPose as representative of the following methods.
         lm = keypoints.pose_landmarks
         lmPose = mp_pose.PoseLandmark
+
+        if lm is None:
+            cv2.putText(image, "No person detected", (10, 30), font, 0.9, red, 2)
+            cv2.imshow('MediaPipe Pose', image)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            continue
 
         # Left shoulder.
         l_shldr_x = int(lm.landmark[lmPose.LEFT_SHOULDER].x * w)
@@ -137,6 +235,12 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         neck_inclination = findAngle(l_shldr_x, l_shldr_y, l_ear_x, l_ear_y)
         torso_inclination = findAngle(l_hip_x, l_hip_y, l_shldr_x, l_shldr_y)
 
+        # Update Plot Data
+        elapsed_time = time.time() - start_time
+        time_data.append(elapsed_time)
+        neck_data.append(neck_inclination)
+        torso_data.append(torso_inclination)
+
         # Draw landmarks.
         cv2.circle(image, (l_shldr_x, l_shldr_y), 7, white, 2)
         cv2.circle(image, (l_ear_x, l_ear_y), 7, white, 2)
@@ -159,8 +263,10 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         # Determine whether good posture or bad posture.
         # The threshold angles have been set based on intuition.
         if neck_inclination < neck_angle_threshold and torso_inclination < torso_angle_threshold:
-            bad_frames = 0
+            #bad_frames = 0
+            bad_frames_int = 0
             good_frames += 1
+            good_frames_int += 1
 
             cv2.putText(image, angle_text_string_neck, (10, 30), font, 0.6, light_green, 2)
             cv2.putText(image, angle_text_string_torso, (10, 60), font, 0.6, light_green, 2)
@@ -174,8 +280,17 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
             cv2.line(image, (l_hip_x, l_hip_y), (l_hip_x, l_hip_y - 100), green, 2)
 
         else:
-            good_frames = 0
+            #good_frames = 0
+            good_frames_int = 0
             bad_frames += 1
+            bad_frames_int += 1
+
+            if (1 / fps) * bad_frames_int >= time_threshold:
+                current_time = time.time()
+
+                if current_time - last_warning_time >= 5:
+                    threading.Thread(target=sendWarning, daemon=True).start()
+                    last_warning_time = current_time
 
             cv2.putText(image, angle_text_string_neck, (10, 30), font, 0.6, red, 2)
             cv2.putText(image, angle_text_string_torso, (10, 60), font, 0.6, red, 2)
@@ -193,16 +308,14 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         bad_time = (1 / fps) * bad_frames
 
         # Pose time.
-        if good_time > 0:
-            time_string_good = 'Good Posture Time : ' + str(round(good_time, 1)) + 's'
-            cv2.putText(image, time_string_good, (10, h - 20), font, 0.9, green, 2)
-        else:
-            time_string_bad = 'Bad Posture Time : ' + str(round(bad_time, 1)) + 's'
-            cv2.putText(image, time_string_bad, (10, h - 20), font, 0.9, red, 2)
+        time_string_good = 'Good Posture Time : ' + str(round(good_time, 1)) + 's'
+        cv2.putText(image, time_string_good, (10, h - 50), font, 0.9, green, 2)
+        time_string_bad = 'Bad Posture Time : ' + str(round(bad_time, 1)) + 's'
+        cv2.putText(image, time_string_bad, (10, h - 20), font, 0.9, red, 2)
 
         # If you stay in bad posture for more than 3 minutes (180s) send an alert.
-        if bad_time > time_threshold:
-            sendWarning()
+        '''if bad_time > time_threshold:
+            sendWarning()'''
 
         # Flip the image horizontally for a selfie-view display.
         cv2.imshow('MediaPipe Pose', image)
@@ -215,8 +328,32 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
     cap.release()
     cv2.destroyAllWindows()
 
+    # Create Plots
+    plt.figure(figsize = (12,6))
+
+    plt.plot(time_data, neck_data, label = 'Neck Inclination')
+    plt.plot(time_data, torso_data, label = 'Torso Inclination')
+
+    plt.axhline(y = neck_angle_threshold, linestyle = '--', label = 'Neck Threshold')
+    plt.axhline(y = torso_angle_threshold, linestyle = '--', label = 'Torso Threshold')
+
+    plt.xlabel('Time (s)')
+    plt.ylabel('Inclination Angle (degrees)')
+    plt.title('Posture Inclination Over Time')
+    plt.legend()
+    plt.grid(True)
+
+    plt.show()
+
 if __name__ == "__main__":
     args = parse_arguments()
+
+    if args.video is None:
+        video_source = select_camera()
+    elif args.video.isdigit():
+        video_source = int(args.video)
+    else:
+        video_source = args.video
     
     print("Arguments:")
     print(f"Video: {args.video}")
@@ -225,4 +362,10 @@ if __name__ == "__main__":
     print(f"Torso Angle Threshold: {args.torso_angle_threshold}")
     print(f"Time Threshold: {args.time_threshold}")
 
-    main(args.video)
+    main(
+        video_path=video_source,
+        offset_threshold=args.offset_threshold,
+        neck_angle_threshold=args.neck_angle_threshold,
+        torso_angle_threshold=args.torso_angle_threshold,
+        time_threshold=args.time_threshold,
+    )
