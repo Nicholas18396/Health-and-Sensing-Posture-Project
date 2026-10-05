@@ -34,3 +34,6 @@ __pycache__/
 
 # Environment
 .env
+
+# PlatformIO build output
+.pio/

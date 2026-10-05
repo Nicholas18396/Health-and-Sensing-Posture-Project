@@ -1,0 +1,5 @@
+# Optional: tools to build and flash the ESP32 firmware in esp32_imu_simple/.
+# Only needed if you flash the ESP32 from this repo:
+#   pip install -r requirements-esp32.txt
+#   pio run -d esp32_imu_simple -t upload
+platformio==6.2.0
