@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import winsound
 import threading
 import os
+import numpy as np
 
 sound_file = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -332,12 +333,20 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
 
     neck_color = 'tab:blue'
     torso_color = 'tab:orange'
-    
+    red_color = 'tab:red'
+
+    mask_neck = np.abs(neck_data) > neck_angle_threshold
+    mask_torso = np.abs(torso_data) > torso_angle_threshold
+
     plt.plot(time_data, neck_data, color = neck_color, label = 'Neck Inclination')
     plt.plot(time_data, torso_data, color = torso_color, label = 'Torso Inclination')
+    plt.plot(time_data, np.where(mask_neck, neck_data, np.nan), color = red_color, zorder = 3, label = 'Out of Tolerance')
+    plt.plot(time_data, np.where(mask_torso, torso_data, np.nan), color = red_color, zorder = 3)
 
     plt.axhline(y = neck_angle_threshold, color = neck_color, linestyle = '--', label = 'Neck Threshold')
     plt.axhline(y = torso_angle_threshold, color = torso_color, linestyle = '--', label = 'Torso Threshold')
+    plt.axhline(y = -neck_angle_threshold, color = neck_color, linestyle = '--')
+    plt.axhline(y = -torso_angle_threshold, color = torso_color, linestyle = '--')
 
     plt.xlabel('Time (s)')
     plt.ylabel('Inclination Angle (degrees)')
