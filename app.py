@@ -43,9 +43,12 @@ def findAngle(x1, y1, x2, y2):
     Returns:
         Angle in degrees.
     """
-    theta = m.acos((y2 - y1) * (-y1) / (m.sqrt((x2 - x1)**2 + (y2 - y1)**2) * y1))
+
+    return -1*m.degrees(m.atan2(x2-x1, y1-y2))
+
+    '''theta = m.acos((y2 - y1) * (-y1) / (m.sqrt((x2 - x1)**2 + (y2 - y1)**2) * y1))
     degree = int(180/m.pi) * theta
-    return degree
+    return degree'''
 
 def sendWarning(x=None):
     """
@@ -58,9 +61,6 @@ def sendWarning(x=None):
         winsound.SND_FILENAME
     )
 
-    '''for i in range(3):
-        winsound.Beep(1000, 300)
-        time.sleep(0.1)'''
 
     pass
 
@@ -168,6 +168,11 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
     torso_data = []
     start_time = time.time()
     last_warning_time = 0
+    good_time = 0.0
+    bad_time = 0.0
+    bad_streak = 0.0
+    prev_time = time.time()
+    is_camera = isinstance(video_path, int)
 
     while True:
         # Capture frames.
@@ -181,6 +186,10 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
 
         if not fps or fps <= 0:
             fps = 30  # fall back if the camera doesn't report a valid fps
+
+        now = time.time()
+        dt = (now - prev_time) if is_camera else (1/fps)
+        prev_time = now
 
         # Get height and width of the frame.
         h, w = image.shape[:2]
@@ -262,11 +271,11 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
 
         # Determine whether good posture or bad posture.
         # The threshold angles have been set based on intuition.
-        if neck_inclination < neck_angle_threshold and torso_inclination < torso_angle_threshold:
-            #bad_frames = 0
-            bad_frames_int = 0
-            good_frames += 1
-            good_frames_int += 1
+        if abs(neck_inclination) < neck_angle_threshold:
+            #and torso_inclination < torso_angle_threshold:
+
+            bad_streak = 0.0
+            good_time += dt
 
             cv2.putText(image, angle_text_string_neck, (10, 30), font, 0.6, light_green, 2)
             cv2.putText(image, angle_text_string_torso, (10, 60), font, 0.6, light_green, 2)
@@ -280,12 +289,10 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
             cv2.line(image, (l_hip_x, l_hip_y), (l_hip_x, l_hip_y - 100), green, 2)
 
         else:
-            #good_frames = 0
-            good_frames_int = 0
-            bad_frames += 1
-            bad_frames_int += 1
+            bad_time += dt
+            bad_streak += dt
 
-            if (1 / fps) * bad_frames_int >= time_threshold:
+            if bad_streak >= time_threshold:
                 current_time = time.time()
 
                 if current_time - last_warning_time >= 5:
@@ -303,19 +310,11 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
             cv2.line(image, (l_hip_x, l_hip_y), (l_shldr_x, l_shldr_y), red, 2)
             cv2.line(image, (l_hip_x, l_hip_y), (l_hip_x, l_hip_y - 100), red, 2)
 
-        # Calculate the time of remaining in a particular posture.
-        good_time = (1 / fps) * good_frames
-        bad_time = (1 / fps) * bad_frames
-
         # Pose time.
         time_string_good = 'Good Posture Time : ' + str(round(good_time, 1)) + 's'
         cv2.putText(image, time_string_good, (10, h - 50), font, 0.9, green, 2)
         time_string_bad = 'Bad Posture Time : ' + str(round(bad_time, 1)) + 's'
         cv2.putText(image, time_string_bad, (10, h - 20), font, 0.9, red, 2)
-
-        # If you stay in bad posture for more than 3 minutes (180s) send an alert.
-        '''if bad_time > time_threshold:
-            sendWarning()'''
 
         # Flip the image horizontally for a selfie-view display.
         cv2.imshow('MediaPipe Pose', image)
@@ -331,11 +330,14 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
     # Create Plots
     plt.figure(figsize = (12,6))
 
-    plt.plot(time_data, neck_data, label = 'Neck Inclination')
-    plt.plot(time_data, torso_data, label = 'Torso Inclination')
+    neck_color = 'tab:blue'
+    torso_color = 'tab:orange'
+    
+    plt.plot(time_data, neck_data, color = neck_color, label = 'Neck Inclination')
+    plt.plot(time_data, torso_data, color = torso_color, label = 'Torso Inclination')
 
-    plt.axhline(y = neck_angle_threshold, linestyle = '--', label = 'Neck Threshold')
-    plt.axhline(y = torso_angle_threshold, linestyle = '--', label = 'Torso Threshold')
+    plt.axhline(y = neck_angle_threshold, color = neck_color, linestyle = '--', label = 'Neck Threshold')
+    plt.axhline(y = torso_angle_threshold, color = torso_color, linestyle = '--', label = 'Torso Threshold')
 
     plt.xlabel('Time (s)')
     plt.ylabel('Inclination Angle (degrees)')
