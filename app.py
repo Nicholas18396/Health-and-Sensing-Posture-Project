@@ -10,6 +10,10 @@ import winsound
 import threading
 import os
 import numpy as np
+from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
+
+warning_times = []
+current_video_time = 0.0
 
 sound_file = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -125,9 +129,10 @@ def parse_arguments():
     parser.add_argument('--neck-angle-threshold', type=int, default=25, help='Threshold value for neck inclination angle.')
     parser.add_argument('--torso-angle-threshold', type=int, default=10, help='Threshold value for torso inclination angle.')
     parser.add_argument('--time-threshold', type=int, default=3, help='Time threshold for triggering a posture alert.')
+    parser.add_argument('--save-video', action='store_true', help='Save a separate video with the posture overlay.')
     return parser.parse_args()
 
-def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, torso_angle_threshold=10, time_threshold=3):
+def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, torso_angle_threshold=10, time_threshold=3, save_video=False):
     # Initialize frame counters.
     good_frames = 0
     bad_frames = 0
@@ -162,6 +167,28 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         print(f"Could not open {source_desc}. Check the path/connection and try again.")
         return
 
+    video_writer = None
+
+    if save_video:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        output_fps = int(cap.get(cv2.CAP_PROP_FPS))
+        if not output_fps or output_fps <=0:
+            output_fps = 30.0
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        output_path = "posture_overlay.mp4"
+
+        video_writer = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
+
+        if video_writer.isOpened():
+            print(f"Saving annotated video to: {output_path}")
+        else:
+            print("Could not create output video.")
+            video_writer.release()
+            video_writer = None
+
     # Meta.
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     time_data = []
@@ -174,6 +201,7 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
     bad_streak = 0.0
     prev_time = time.time()
     is_camera = isinstance(video_path, int)
+    frame_count = 0
 
     while True:
         # Capture frames.
@@ -181,6 +209,9 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         if not success:
             print("Null.Frames")
             break
+
+        current_video_time = frame_count / output_fps
+        frame_count += 1     
 
         # Get fps.
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -210,6 +241,8 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
 
         if lm is None:
             cv2.putText(image, "No person detected", (10, 30), font, 0.9, red, 2)
+            if video_writer is not None:
+                video_writer.write(image)
             cv2.imshow('MediaPipe Pose', image)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -297,6 +330,7 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
                 current_time = time.time()
 
                 if current_time - last_warning_time >= 5:
+                    warning_times.append(current_video_time)
                     threading.Thread(target=sendWarning, daemon=True).start()
                     last_warning_time = current_time
 
@@ -317,6 +351,10 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         time_string_bad = 'Bad Posture Time : ' + str(round(bad_time, 1)) + 's'
         cv2.putText(image, time_string_bad, (10, h - 20), font, 0.9, red, 2)
 
+
+        if video_writer is not None:
+            video_writer.write(image)
+
         # Flip the image horizontally for a selfie-view display.
         cv2.imshow('MediaPipe Pose', image)
 
@@ -324,9 +362,72 @@ def main(video_path="test.mp4", offset_threshold=100, neck_angle_threshold=25, t
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Release the camera and close the windows.
+    
     cap.release()
+
+    if video_writer is not None:
+        video_writer.release()
+
     cv2.destroyAllWindows()
+
+
+    # Add warning sounds to the saved video
+    if save_video and not is_camera and warning_times:
+        audio_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "Fix_Your_Posture.wav"
+        )
+
+        annotated = None
+        warning_clips = []
+        combined_audio = None
+        final_video = None
+
+        try:
+            annotated = VideoFileClip(output_path)
+
+            # Create a NEW audio clip for every warning
+            for t in warning_times:
+                if 0 <= t < annotated.duration:
+                    warning_clip = AudioFileClip(audio_path)
+                    warning_clip = warning_clip.with_start(t)
+                    warning_clips.append(warning_clip)
+
+            if warning_clips:
+                # Overlay all warning sounds at their recorded times
+                combined_audio = CompositeAudioClip(
+                    warning_clips
+                ).with_duration(annotated.duration)
+
+                final_video = annotated.with_audio(combined_audio)
+
+                final_video.write_videofile(
+                    "posture_overlay_with_audio.mp4",
+                    codec="libx264",
+                    audio_codec="aac"
+                )
+
+                print("Saved video with warning audio.")
+                print("Warning timestamps:", warning_times)
+
+            else:
+                print("No warning timestamps fell within the video.")
+
+        except Exception as e:
+            print(f"Error adding audio to video: {e}")
+
+        finally:
+            if final_video is not None:
+                final_video.close()
+
+            if combined_audio is not None:
+                combined_audio.close()
+
+            for clip in warning_clips:
+                clip.close()
+
+            if annotated is not None:
+                annotated.close()
 
     # Create Plots
     plt.figure(figsize = (12,6))
@@ -379,4 +480,5 @@ if __name__ == "__main__":
         neck_angle_threshold=args.neck_angle_threshold,
         torso_angle_threshold=args.torso_angle_threshold,
         time_threshold=args.time_threshold,
+        save_video=args.save_video
     )
